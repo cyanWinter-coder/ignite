@@ -29,6 +29,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
@@ -46,6 +47,7 @@ import org.apache.ignite.internal.managers.discovery.DiscoCache;
 import org.apache.ignite.internal.processors.cache.ExchangeDiscoveryEvents;
 import org.apache.ignite.internal.processors.cache.GridCachePartitionExchangeManager;
 import org.apache.ignite.internal.processors.cluster.BaselineTopology;
+import org.apache.ignite.internal.util.GridLogThrottle;
 import org.apache.ignite.internal.util.future.GridFutureAdapter;
 import org.apache.ignite.internal.util.typedef.F;
 import org.apache.ignite.internal.util.typedef.internal.CU;
@@ -145,6 +147,9 @@ public class GridAffinityAssignmentCache {
 
     /** Number of non-shallow (see {@link HistoryAffinityAssignmentImpl}) affinity cache instances. */
     private volatile int nonShallowHistSize;
+
+    /** Timestamp of the last warning about an unverifiable primary node (throttles the warning). */
+    private final AtomicLong unverifiablePrimaryWarnTs = new AtomicLong();
 
     /** */
     private final Object similarAffKey;
@@ -312,6 +317,8 @@ public class GridAffinityAssignmentCache {
         affCache.clear();
 
         nonShallowHistSize = 0;
+
+        unverifiablePrimaryWarnTs.set(0);
 
         head.set(new GridAffinityAssignmentV2(AffinityTopologyVersion.NONE));
 
@@ -859,8 +866,34 @@ public class GridAffinityAssignmentCache {
     public boolean primaryChanged(int part, AffinityTopologyVersion startVer, AffinityTopologyVersion endVer) {
         AffinityAssignment aff = affCache.get(startVer);
 
-        if (aff == null)
-            return false;
+        if (aff == null) {
+            // Assignment for the requested version is already out of history (or was never calculated
+            // on this node), so it is impossible to confirm that the primary node did not change.
+            // Treat the primary as changed: callers must not serve cached (e.g. near cache) values
+            // that cannot be verified against the affinity history.
+            List<List<ClusterNode>> headAssignment = head.get().assignment();
+
+            // Throttled per cache since the same condition may be detected for many partitions and keys.
+            long now = U.currentTimeMillis();
+            long warnTs = unverifiablePrimaryWarnTs.get();
+
+            if (now - warnTs >= GridLogThrottle.DFLT_THROTTLE_TIMEOUT &&
+                unverifiablePrimaryWarnTs.compareAndSet(warnTs, now)) {
+                log.warning("Affinity assignment for topology version is not found in history, " +
+                    "cannot verify that primary node did not change, cached near entry will be invalidated " +
+                    "[grp=" + cacheOrGrpName +
+                    ", part=" + part +
+                    ", startVer=" + startVer +
+                    ", endVer=" + endVer +
+                    ", head=" + head.get().topologyVersion() +
+                    ", curAssignment=" + (headAssignment != null && part < headAssignment.size() ?
+                        nodeAddresses(headAssignment.get(part)) : null) +
+                    ", history=" + affCache.keySet() +
+                    ']');
+            }
+
+            return true;
+        }
 
         List<ClusterNode> nodes = aff.get(part);
 
@@ -883,6 +916,26 @@ public class GridAffinityAssignmentCache {
         }
 
         return true;
+    }
+
+    /**
+     * @param nodes Assignment nodes.
+     * @return String with node ids and addresses (used for diagnostic logging).
+     */
+    private static String nodeAddresses(List<ClusterNode> nodes) {
+        if (nodes == null)
+            return null;
+
+        SB sb = new SB("[");
+
+        for (ClusterNode node : nodes) {
+            if (sb.length() > 1)
+                sb.a(", ");
+
+            sb.a("(id=").a(node.id()).a(", addrs=").a(node.addresses()).a(')');
+        }
+
+        return sb.a(']').toString();
     }
 
     /**

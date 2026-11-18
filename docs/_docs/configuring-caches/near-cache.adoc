@@ -101,3 +101,15 @@ include::code-snippets/dotnet/NearCaches.cs[tag=nearCacheClientNode,indent=0]
 tab:C++[unsupported]
 --
 
+== Near Cache Consistency During Topology Changes [[near-cache-consistency-during-topology-changes]]
+
+When the cluster topology changes (a node joins or leaves), partitions are migrated between nodes and the primary node for a given key can change. The near cache uses the following mechanisms to avoid serving stale values during and after rebalancing:
+
+* *Topology version validation.* Every near cache entry records the topology version at which the value was loaded from the primary node. Before a cached value is served, the entry is validated against the affinity assignment history: if the primary node for the entry's partition changed between the recorded version and the current topology version, the entry is invalidated and the value is re-fetched from the current primary. The new affinity mapping is used for reads only after the partition map exchange for the new topology version completes.
+
+* *Invalidation on update.* When an entry is updated or removed on the primary node, the primary sends an invalidation notification to all nodes that hold the entry in their near caches, so the next read fetches the fresh value.
+
+* *Unverifiable versions.* If the topology version recorded by a near cache entry is no longer present in the local affinity assignment history (the history size is controlled by the `IGNITE_AFFINITY_HISTORY_SIZE` system property, 25 by default), the entry cannot be verified and is invalidated instead of being served. A warning containing the cache (or cache group) name, the partition number, and the addresses of the nodes currently assigned to the partition is logged in this case.
+
+* *Client reconnect.* When a thick client node reconnects to the cluster after a disconnect, its near cache is cleared, so entries cached under the old topology are never served after the reconnect.
+

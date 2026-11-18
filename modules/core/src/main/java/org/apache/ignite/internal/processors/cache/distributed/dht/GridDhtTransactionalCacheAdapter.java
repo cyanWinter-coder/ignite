@@ -1829,7 +1829,10 @@ public abstract class GridDhtTransactionalCacheAdapter<K, V> extends GridDhtCach
                 invalidateNearEntry(key, ver);
             }
             catch (IgniteCheckedException e) {
-                U.error(log, "Failed to invalidate near entry during rollback to savepoint: " + key, e);
+                U.error(log, "Failed to invalidate near entry during rollback to savepoint [cache=" + name() +
+                    ", part=" + ctx.affinity().partition(key) +
+                    ", locNode=" + ctx.localNodeId() +
+                    ", key=" + key + ']', e);
             }
         }
     }

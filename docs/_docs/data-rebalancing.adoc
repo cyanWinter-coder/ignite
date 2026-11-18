@@ -269,3 +269,7 @@ For a node joining for the first time (no local data), the rebalance is always a
 == Monitoring Rebalancing Process
 
 You can monitor the link:monitoring-metrics/new-metrics#caches[rebalancing process for specific caches using JMX].
+
+== Near Cache Consistency During Rebalancing
+
+Nodes that have a link:configuring-caches/near-cache[near cache] configured keep serving reads from the local near cache while partitions are being migrated. To prevent stale reads, each near cache entry is validated against the affinity assignment history before it is served: if the primary node for the entry's partition changed since the entry was loaded, the entry is invalidated and the value is re-fetched from the current primary. Entries whose topology version can no longer be verified (for example, because the version fell out of the affinity assignment history) are invalidated rather than served. Refer to link:configuring-caches/near-cache#near-cache-consistency-during-topology-changes[Near Cache Consistency During Topology Changes] for more details.

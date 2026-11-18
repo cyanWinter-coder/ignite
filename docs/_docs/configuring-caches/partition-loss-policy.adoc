@@ -24,6 +24,9 @@ You can set the number of backup partitions for a cache in the link:configuring-
 When the cluster topology changes, Ignite checks if the change resulted in a partition loss, and, depending on the configured partition loss policy and baseline autoadjustment settings, allows or prohibits operations on caches.
 See the description of each policy in the next section.
 
+The check distinguishes backed-up data from unbacked-up data: a partition is marked as lost only if no node in the cluster holds a copy of it (neither primary nor backup).
+If at least one copy survives, the partition is recovered by rebalancing — one of the remaining copies becomes the new primary — and no data loss is reported for it.
+
 For pure in-memory caches, when a partition is lost, the data from the partition cannot be recovered unless you load it into the cluster again.
 For persistent caches, the data is not physically lost, because it has been persisted to disk.
 When the nodes that failed or disconnected return to the cluster (after a restart), the data is loaded from the disk.

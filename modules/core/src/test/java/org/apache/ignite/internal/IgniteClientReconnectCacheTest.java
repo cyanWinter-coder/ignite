@@ -325,6 +325,54 @@ public class IgniteClientReconnectCacheTest extends IgniteClientReconnectAbstrac
     }
 
     /**
+     * Checks that after a client reconnect the near cache does not serve entries
+     * cached under the old topology: entries cached before the disconnect must be
+     * invalidated, and reads must return values written while the client was disconnected.
+     *
+     * @throws Exception If failed.
+     */
+    @Test
+    public void testReconnectNearCacheDoesNotServeStaleValues() throws Exception {
+        IgniteEx client = startClientGrid(SRV_CNT);
+
+        final Ignite srv = ignite(0);
+
+        CacheConfiguration<Object, Object> ccfg = new CacheConfiguration<>(DEFAULT_CACHE_NAME);
+
+        ccfg.setName(NEAR_CACHE_NAME);
+        ccfg.setBackups(1);
+
+        final IgniteCache<Object, Object> nearCache = client.getOrCreateCache(ccfg, new NearCacheConfiguration<>());
+
+        // Populate the near cache on the client.
+        for (int i = 0; i < 100; i++) {
+            srv.cache(NEAR_CACHE_NAME).put(i, i);
+
+            assertEquals(i, nearCache.get(i));
+        }
+
+        // Values are served from the near cache.
+        for (int i = 0; i < 100; i++)
+            assertEquals(i, nearCache.localPeek(i));
+
+        reconnectClientNode(client, srv, new Runnable() {
+            @Override public void run() {
+                // Update values while the client is disconnected.
+                for (int i = 0; i < 100; i++)
+                    srv.cache(NEAR_CACHE_NAME).put(i, i + 1000);
+            }
+        });
+
+        // Near cache must not contain entries cached under the old topology.
+        for (int i = 0; i < 100; i++)
+            assertNull("Stale near cache entry after reconnect [key=" + i + ']', nearCache.localPeek(i));
+
+        // Reads after reconnect must return values written while the client was disconnected.
+        for (int i = 0; i < 100; i++)
+            assertEquals(i + 1000, nearCache.get(i));
+    }
+
+    /**
      * @throws Exception If failed.
      */
     @Test

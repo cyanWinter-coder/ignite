@@ -37,8 +37,10 @@ import org.apache.ignite.internal.processors.cache.persistence.CacheDataRow;
 import org.apache.ignite.internal.processors.cache.persistence.wal.WALPointer;
 import org.apache.ignite.internal.processors.cache.transactions.IgniteInternalTx;
 import org.apache.ignite.internal.processors.cache.version.GridCacheVersion;
+import org.apache.ignite.internal.util.GridLogThrottle;
 import org.apache.ignite.internal.util.typedef.F;
 import org.apache.ignite.internal.util.typedef.internal.S;
+import org.apache.ignite.internal.util.typedef.internal.U;
 import org.apache.ignite.lang.IgniteBiTuple;
 import org.jetbrains.annotations.Nullable;
 
@@ -63,6 +65,9 @@ public class GridNearCacheEntry extends GridDistributedCacheEntry {
 
     /** */
     private short evictReservations;
+
+    /** Timestamp of the last warning about an unverifiable near entry (throttles the warning per node). */
+    private static volatile long unverifiableEntryWarnTs;
 
     /**
      * @param ctx Cache context.
@@ -122,12 +127,51 @@ public class GridNearCacheEntry extends GridDistributedCacheEntry {
 
             return true;
         }
-        catch (IllegalStateException ignore) {
-            // Do not have affinity history.
+        catch (IllegalStateException e) {
+            // Do not have affinity history: the entry cannot be verified against the current topology.
             this.topVer = AffinityTopologyVersion.NONE;
+
+            warnUnverifiableEntry(topVer0, e);
 
             return false;
         }
+    }
+
+    /**
+     * Logs a throttled warning about a near cache entry that cannot be verified against the affinity history.
+     * The entry is invalidated in this case, so a stale value is never returned to the caller.
+     *
+     * @param entryTopVer Topology version recorded by the entry.
+     * @param e Cause.
+     */
+    private void warnUnverifiableEntry(AffinityTopologyVersion entryTopVer, IllegalStateException e) {
+        long now = U.currentTimeMillis();
+
+        // The check is racy on purpose: entries are not locked here and a duplicate warning is harmless.
+        if (now - unverifiableEntryWarnTs < GridLogThrottle.DFLT_THROTTLE_TIMEOUT)
+            return;
+
+        unverifiableEntryWarnTs = now;
+
+        // Do not resolve the current primary here: this method may be called while the entry lock is held, and
+        // resolving affinity may block until the affinity ready future is completed. The addresses of the nodes
+        // currently assigned to the partition are logged by GridAffinityAssignmentCache#primaryChanged.
+        log.warning("Near cache entry cannot be verified against the affinity history and will be invalidated " +
+            "[cache=" + cctx.name() +
+            ", part=" + part +
+            ", key=" + key +
+            ", entryTopVer=" + entryTopVer +
+            ", locNode=" + nodeAddress(cctx.localNode()) +
+            ", err=" + e.getMessage() +
+            ']', e);
+    }
+
+    /**
+     * @param node Node.
+     * @return Node id and addresses.
+     */
+    private static String nodeAddress(@Nullable ClusterNode node) {
+        return node == null ? null : "(id=" + node.id() + ", addrs=" + node.addresses() + ')';
     }
 
     /**
